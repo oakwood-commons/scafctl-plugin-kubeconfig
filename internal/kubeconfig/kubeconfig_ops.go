@@ -13,6 +13,20 @@ import (
 // kubeconfig user entries written by this provider.
 const execAPIVersion = "client.authentication.k8s.io/v1"
 
+// interactiveMode maps the host's interactive_mode input onto client-go's
+// ExecInteractiveMode. An empty or unrecognized value defaults to IfAvailable,
+// matching the host contract default.
+func interactiveMode(mode string) clientcmdapi.ExecInteractiveMode {
+	switch mode {
+	case string(clientcmdapi.NeverExecInteractiveMode):
+		return clientcmdapi.NeverExecInteractiveMode
+	case string(clientcmdapi.AlwaysExecInteractiveMode):
+		return clientcmdapi.AlwaysExecInteractiveMode
+	default:
+		return clientcmdapi.IfAvailableExecInteractiveMode
+	}
+}
+
 // resolveKubeconfigPath returns an explicit kubeconfig path, falling back to the
 // host's default resolution (KUBECONFIG env, then ~/.kube/config).
 func resolveKubeconfigPath(path string) string {
@@ -58,23 +72,41 @@ func opWrite(in writeInput) (map[string]any, error) {
 		return failure(err.Error()), nil
 	}
 
-	// Preserve any existing cluster fields (CA data, TLS server name, proxy
-	// URL, etc.) so a re-login only updates the server endpoint and TLS-skip
-	// flag instead of clobbering CA/proxy settings.
+	// Preserve existing cluster fields (TLS server name, proxy URL, and any
+	// existing CA data when no new ca_data is supplied) so a re-login only
+	// updates the server endpoint and TLS settings. When ca_data is provided it
+	// takes precedence over the existing CA/insecure settings (handled below).
 	cluster := cfg.Clusters[clusterName]
 	if cluster == nil {
 		cluster = &clientcmdapi.Cluster{}
 		cfg.Clusters[clusterName] = cluster
 	}
 	cluster.Server = in.Server
-	cluster.InsecureSkipTLSVerify = in.InsecureSkipTLS
+	// A CA bundle is preferred over skipping verification: when provided, embed
+	// it and verify the API server certificate. Otherwise honor the insecure
+	// flag.
+	if in.CAData != "" {
+		cluster.CertificateAuthorityData = []byte(in.CAData)
+		cluster.CertificateAuthority = ""
+		cluster.InsecureSkipTLSVerify = false
+	} else {
+		cluster.InsecureSkipTLSVerify = in.InsecureSkipTLS
+		// client-go rejects a cluster that sets both a CA and the insecure flag,
+		// so drop any CA the preserved entry carried when switching to insecure.
+		if in.InsecureSkipTLS {
+			cluster.CertificateAuthorityData = nil
+			cluster.CertificateAuthority = ""
+		}
+	}
 
 	cfg.AuthInfos[userName] = &clientcmdapi.AuthInfo{
 		Exec: &clientcmdapi.ExecConfig{
-			APIVersion:      execAPIVersion,
-			Command:         in.ExecCommand,
-			Args:            in.ExecArgs,
-			InteractiveMode: clientcmdapi.IfAvailableExecInteractiveMode,
+			APIVersion:         execAPIVersion,
+			Command:            in.ExecCommand,
+			Args:               in.ExecArgs,
+			InstallHint:        in.InstallHint,
+			InteractiveMode:    interactiveMode(in.InteractiveMode),
+			ProvideClusterInfo: in.ProvideClusterInfo,
 		},
 	}
 

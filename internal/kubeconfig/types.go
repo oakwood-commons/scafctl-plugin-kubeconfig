@@ -20,16 +20,20 @@ const (
 
 // writeInput holds the parameters for the kubeconfig_write operation.
 type writeInput struct {
-	Server            string   `json:"server"`
-	Audience          string   `json:"audience"`
-	ClusterName       string   `json:"cluster_name"`
-	ContextName       string   `json:"context_name"`
-	UserName          string   `json:"user_name"`
-	KubeconfigPath    string   `json:"kubeconfig_path"`
-	ExecCommand       string   `json:"exec_command"`
-	ExecArgs          []string `json:"exec_args"`
-	InsecureSkipTLS   bool     `json:"insecure_skip_tls"`
-	SetCurrentContext bool     `json:"set_current_context"`
+	Server             string   `json:"server"`
+	Audience           string   `json:"audience"`
+	ClusterName        string   `json:"cluster_name"`
+	ContextName        string   `json:"context_name"`
+	UserName           string   `json:"user_name"`
+	KubeconfigPath     string   `json:"kubeconfig_path"`
+	ExecCommand        string   `json:"exec_command"`
+	ExecArgs           []string `json:"exec_args"`
+	CAData             string   `json:"ca_data"`
+	InteractiveMode    string   `json:"interactive_mode"`
+	InstallHint        string   `json:"install_hint"`
+	ProvideClusterInfo bool     `json:"provide_cluster_info"`
+	InsecureSkipTLS    bool     `json:"insecure_skip_tls"`
+	SetCurrentContext  bool     `json:"set_current_context"`
 }
 
 // removeInput holds the parameters for the kubeconfig_remove operation.
@@ -69,16 +73,20 @@ type whoamiInput struct {
 // parseWriteInput maps the flat wire map onto a typed input struct.
 func parseWriteInput(in map[string]any) writeInput {
 	return writeInput{
-		Server:            stringField(in, "server"),
-		Audience:          stringField(in, "audience"),
-		ClusterName:       stringField(in, "cluster_name"),
-		ContextName:       stringField(in, "context_name"),
-		UserName:          stringField(in, "user_name"),
-		KubeconfigPath:    stringField(in, "kubeconfig_path"),
-		ExecCommand:       stringField(in, "exec_command"),
-		ExecArgs:          stringSliceField(in, "exec_args"),
-		InsecureSkipTLS:   boolField(in, "insecure_skip_tls"),
-		SetCurrentContext: boolField(in, "set_current_context"),
+		Server:             stringField(in, "server"),
+		Audience:           stringField(in, "audience"),
+		ClusterName:        stringField(in, "cluster_name"),
+		ContextName:        stringField(in, "context_name"),
+		UserName:           stringField(in, "user_name"),
+		KubeconfigPath:     stringField(in, "kubeconfig_path"),
+		ExecCommand:        stringField(in, "exec_command"),
+		ExecArgs:           stringSliceField(in, "exec_args"),
+		CAData:             stringField(in, "ca_data"),
+		InteractiveMode:    stringField(in, "interactive_mode"),
+		InstallHint:        stringField(in, "install_hint"),
+		ProvideClusterInfo: boolField(in, "provide_cluster_info"),
+		InsecureSkipTLS:    boolField(in, "insecure_skip_tls"),
+		SetCurrentContext:  boolField(in, "set_current_context"),
 	}
 }
 
