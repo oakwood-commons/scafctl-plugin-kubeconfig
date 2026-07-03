@@ -171,6 +171,179 @@ func TestWrite_PreservesExistingClusterTLS(t *testing.T) {
 	assert.Equal(t, "http://proxy.example.com:3128", cluster.ProxyURL)
 }
 
+func TestWrite_ExecConfigFields(t *testing.T) {
+	t.Run("provide_cluster_info true renders into exec block", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config")
+		data := executeData(t, map[string]any{
+			"operation":            OpWrite,
+			"server":               "https://api.example.com:6443",
+			"cluster_name":         "prod",
+			"exec_command":         "mycli",
+			"kubeconfig_path":      path,
+			"provide_cluster_info": true,
+		})
+		assert.Equal(t, true, data["success"])
+
+		exec := loadExec(t, path, "prod")
+		assert.True(t, exec.ProvideClusterInfo)
+	})
+
+	t.Run("provide_cluster_info defaults to false when omitted", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config")
+		data := executeData(t, map[string]any{
+			"operation":       OpWrite,
+			"server":          "https://api.example.com:6443",
+			"cluster_name":    "prod",
+			"exec_command":    "mycli",
+			"kubeconfig_path": path,
+		})
+		assert.Equal(t, true, data["success"])
+
+		exec := loadExec(t, path, "prod")
+		assert.False(t, exec.ProvideClusterInfo)
+	})
+
+	t.Run("install_hint renders into exec block", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config")
+		executeData(t, map[string]any{
+			"operation":       OpWrite,
+			"server":          "https://api.example.com:6443",
+			"cluster_name":    "prod",
+			"exec_command":    "mycli",
+			"kubeconfig_path": path,
+			"install_hint":    "install mycli from https://example.com",
+		})
+
+		exec := loadExec(t, path, "prod")
+		assert.Equal(t, "install mycli from https://example.com", exec.InstallHint)
+	})
+
+	interactiveCases := []struct {
+		name string
+		in   string
+		want clientcmdapi.ExecInteractiveMode
+	}{
+		{"never", "Never", clientcmdapi.NeverExecInteractiveMode},
+		{"always", "Always", clientcmdapi.AlwaysExecInteractiveMode},
+		{"if_available", "IfAvailable", clientcmdapi.IfAvailableExecInteractiveMode},
+		{"empty defaults to if_available", "", clientcmdapi.IfAvailableExecInteractiveMode},
+		{"unknown defaults to if_available", "bogus", clientcmdapi.IfAvailableExecInteractiveMode},
+	}
+	for _, tc := range interactiveCases {
+		t.Run("interactive_mode "+tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config")
+			executeData(t, map[string]any{
+				"operation":        OpWrite,
+				"server":           "https://api.example.com:6443",
+				"cluster_name":     "prod",
+				"exec_command":     "mycli",
+				"kubeconfig_path":  path,
+				"interactive_mode": tc.in,
+			})
+
+			exec := loadExec(t, path, "prod")
+			assert.Equal(t, tc.want, exec.InteractiveMode)
+		})
+	}
+}
+
+func TestWrite_CADataPrecedence(t *testing.T) {
+	t.Run("ca_data embeds CA and forces verification over insecure flag", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config")
+
+		// Seed a cluster that already references a CA *file* path; embedding
+		// ca_data must clear it so client-go does not reject the cluster for
+		// specifying both certificate-authority and certificate-authority-data.
+		seed := clientcmdapi.NewConfig()
+		seed.Clusters["prod"] = &clientcmdapi.Cluster{
+			Server:               "https://old.example.com:6443",
+			CertificateAuthority: "/etc/ca.crt",
+		}
+		require.NoError(t, clientcmd.WriteToFile(*seed, path))
+
+		executeData(t, map[string]any{
+			"operation":         OpWrite,
+			"server":            "https://api.example.com:6443",
+			"cluster_name":      "prod",
+			"exec_command":      "mycli",
+			"kubeconfig_path":   path,
+			"ca_data":           "pem-ca-bundle",
+			"insecure_skip_tls": true,
+		})
+
+		cfg, err := clientcmd.LoadFromFile(path)
+		require.NoError(t, err)
+		cluster := cfg.Clusters["prod"]
+		require.NotNil(t, cluster)
+		assert.Equal(t, []byte("pem-ca-bundle"), cluster.CertificateAuthorityData)
+		assert.Empty(t, cluster.CertificateAuthority)
+		assert.False(t, cluster.InsecureSkipTLSVerify)
+	})
+
+	t.Run("insecure_skip_tls honored when no ca_data", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config")
+		executeData(t, map[string]any{
+			"operation":         OpWrite,
+			"server":            "https://api.example.com:6443",
+			"cluster_name":      "prod",
+			"exec_command":      "mycli",
+			"kubeconfig_path":   path,
+			"insecure_skip_tls": true,
+		})
+
+		cfg, err := clientcmd.LoadFromFile(path)
+		require.NoError(t, err)
+		cluster := cfg.Clusters["prod"]
+		require.NotNil(t, cluster)
+		assert.Empty(t, cluster.CertificateAuthorityData)
+		assert.True(t, cluster.InsecureSkipTLSVerify)
+	})
+
+	t.Run("switching a CA-verified cluster to insecure clears the CA", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config")
+
+		// Seed a cluster that was previously CA-verified. Re-logging in with
+		// insecure_skip_tls and no ca_data must drop the CA, else client-go
+		// rejects a cluster that carries both a CA and the insecure flag.
+		seed := clientcmdapi.NewConfig()
+		seed.Clusters["prod"] = &clientcmdapi.Cluster{
+			Server:                   "https://old.example.com:6443",
+			CertificateAuthorityData: []byte("pem-ca-bundle"),
+			CertificateAuthority:     "/etc/ca.crt",
+		}
+		require.NoError(t, clientcmd.WriteToFile(*seed, path))
+
+		executeData(t, map[string]any{
+			"operation":         OpWrite,
+			"server":            "https://api.example.com:6443",
+			"cluster_name":      "prod",
+			"exec_command":      "mycli",
+			"kubeconfig_path":   path,
+			"insecure_skip_tls": true,
+		})
+
+		cfg, err := clientcmd.LoadFromFile(path)
+		require.NoError(t, err)
+		cluster := cfg.Clusters["prod"]
+		require.NotNil(t, cluster)
+		assert.True(t, cluster.InsecureSkipTLSVerify)
+		assert.Empty(t, cluster.CertificateAuthorityData)
+		assert.Empty(t, cluster.CertificateAuthority)
+	})
+}
+
+// loadExec loads a kubeconfig and returns the exec block for the named user,
+// failing the test if it is absent.
+func loadExec(t *testing.T, path, userName string) *clientcmdapi.ExecConfig {
+	t.Helper()
+	cfg, err := clientcmd.LoadFromFile(path)
+	require.NoError(t, err)
+	authInfo, ok := cfg.AuthInfos[userName]
+	require.True(t, ok, "user %q not found in kubeconfig", userName)
+	require.NotNil(t, authInfo.Exec, "exec block missing for user %q", userName)
+	return authInfo.Exec
+}
+
 func TestWrite_Validation(t *testing.T) {
 	t.Run("missing server", func(t *testing.T) {
 		data := executeData(t, map[string]any{
